@@ -14,9 +14,7 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Objects;
 
-
-import static com.personal.url_shortner.Utils.Utility.BASE62;
-import static com.personal.url_shortner.Utils.Utility.BASE_URL;
+import static com.personal.url_shortner.Utils.Utility.*;
 
 @Slf4j
 @Service
@@ -42,11 +40,7 @@ public class URLServiceImpl implements URLService {
         String shortKey = generateUniqueShortCode();
         UrlMapping mapping = UrlTransformer.entityFromDTO(urlMappingDTO, shortKey);
         mapping = repo.save(mapping);
-        redisService.save(
-                "url:" + mapping.getShortCode(),
-                mapping.getOriginalUrl(),
-                Duration.ofHours(24)
-        );
+        saveInRedis(mapping);
         UrlMappingDTO mappingDTO = UrlTransformer.dtoFromEntity(mapping);
         mappingDTO.setShortCode(BASE_URL + shortKey);
         return mappingDTO;
@@ -73,9 +67,11 @@ public class URLServiceImpl implements URLService {
             return response;
         }
         UrlMapping url = repo.findbyShortCode(shortCode);
+
         if (Objects.isNull(url)) {
             throw new NoDataFound("Given Code is not available..");
         }
+        saveInRedis(url);
         return UrlTransformer.dtoFromEntity(url);
     }
 
@@ -97,5 +93,18 @@ public class URLServiceImpl implements URLService {
         } while (repo.existsByShortCode(code));
 
         return code;
+    }
+
+    private void saveInRedis(UrlMapping url){
+        try {
+            redisService.save(
+                    URL_PREFIX + url.getShortCode(),
+                    url.getOriginalUrl(),
+                    Duration.ofHours(24)
+            );
+        }
+        catch(Exception e){
+            log.error("Redis unavailable",e);
+        }
     }
 }
