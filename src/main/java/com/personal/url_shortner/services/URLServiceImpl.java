@@ -6,23 +6,27 @@ import com.personal.url_shortner.exception.NoDataFound;
 import com.personal.url_shortner.models.UrlMapping;
 import com.personal.url_shortner.repo.URL_Repo;
 import com.personal.url_shortner.transformers.UrlTransformer;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.security.SecureRandom;
+import java.time.Duration;
 import java.util.List;
 import java.util.Objects;
 
+import static com.personal.url_shortner.Utils.Utility.*;
 
-import static com.personal.url_shortner.Utils.Utility.BASE62;
-import static com.personal.url_shortner.Utils.Utility.BASE_URL;
-
+@Slf4j
 @Service
-public class URLServiceImpl implements URLService{
+public class URLServiceImpl implements URLService {
 
     private static final SecureRandom RANDOM = new SecureRandom();
     private final URL_Repo repo;
-    public URLServiceImpl(URL_Repo repo){
+    private final RedisService redisService;
+
+    public URLServiceImpl(URL_Repo repo,RedisService service) {
         this.repo = repo;
+        this.redisService = service;
     }
 
 
@@ -30,10 +34,13 @@ public class URLServiceImpl implements URLService{
     public UrlMappingDTO convertUrl(UrlMappingDTO urlMappingDTO) {
 
         Boolean isAvailable = repo.existsByOriginalUrl(urlMappingDTO.getOriginalUrl());
-        if(isAvailable) { throw new DataAlreadyPresent("URL Already Presnt");}
+        if (isAvailable) {
+            throw new DataAlreadyPresent("URL Already Presnt");
+        }
         String shortKey = generateUniqueShortCode();
-        UrlMapping mapping = UrlTransformer.entityFromDTO(urlMappingDTO,shortKey);
+        UrlMapping mapping = UrlTransformer.entityFromDTO(urlMappingDTO, shortKey);
         mapping = repo.save(mapping);
+        saveInRedis(mapping);
         UrlMappingDTO mappingDTO = UrlTransformer.dtoFromEntity(mapping);
         mappingDTO.setShortCode(BASE_URL + shortKey);
         return mappingDTO;
@@ -48,15 +55,28 @@ public class URLServiceImpl implements URLService{
 
     @Override
     public UrlMappingDTO getUrl(String shortCode) {
+        String cachedShortCode =
+                redisService.get("url:" + shortCode);
+        log.info("cached original url : {}",cachedShortCode);
+        if (cachedShortCode != null) {
+
+            UrlMappingDTO response = new UrlMappingDTO();
+            response.setOriginalUrl(cachedShortCode);
+            response.setShortCode(BASE_URL + cachedShortCode);
+
+            return response;
+        }
         UrlMapping url = repo.findbyShortCode(shortCode);
-        if (Objects.isNull(url)){
+
+        if (Objects.isNull(url)) {
             throw new NoDataFound("Given Code is not available..");
         }
-        return  UrlTransformer.dtoFromEntity(url);
+        saveInRedis(url);
+        return UrlTransformer.dtoFromEntity(url);
     }
 
 
-    private  String convertToBase62() {
+    private String convertToBase62() {
 
         StringBuilder sb = new StringBuilder();
         for (int i = 0; i < 7; i++) {
@@ -73,5 +93,18 @@ public class URLServiceImpl implements URLService{
         } while (repo.existsByShortCode(code));
 
         return code;
+    }
+
+    private void saveInRedis(UrlMapping url){
+        try {
+            redisService.save(
+                    URL_PREFIX + url.getShortCode(),
+                    url.getOriginalUrl(),
+                    Duration.ofHours(24)
+            );
+        }
+        catch(Exception e){
+            log.error("Redis unavailable",e);
+        }
     }
 }
